@@ -1,0 +1,9 @@
+/target
+.git
+.idea
+.vscode
+.DS_Store
+*.md
+.cursor
+agent-tools
+agent-transcripts
