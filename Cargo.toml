@@ -3,6 +3,9 @@ name = "Rukia-bar"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "rukia_bar"
+
 [dependencies]
 tokio = { version = "1.52.3", features = ["full"] }
 serenity = {
@@ -16,5 +19,26 @@ serenity = {
         "cache"
     ]
 }
-songbird = { version = "0.6.0", features = ["serenity"]}
+songbird = { version = "0.6.0", features = ["serenity", "builtin-queue"] }
+dashmap = "6.1"
+parking_lot = "0.12"
+# Songbird nie włącza formatów symphonia — bez tego WebM/MP4 z YouTube nie da się odczytać.
+symphonia = { version = "0.5", default-features = false, features = [
+    "mkv",
+    "ogg",
+    "vorbis",
+    "aac",
+    "isomp4",
+    "mp3",
+    "pcm",
+    "flac",
+    "wav",
+] }
 dotenvy = "0.15"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+thiserror = "2.0"
+serde_json = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+async-trait = "0.1"
+uuid = { version = "1", features = ["v4"] }

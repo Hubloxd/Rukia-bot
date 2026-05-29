@@ -1,0 +1,12 @@
+services:
+  rukia-bar:
+    build: .
+    container_name: rukia-bar
+    restart: unless-stopped
+    # Discord voice wymaga UDP — bridge NAT zwykle blokuje audio (join OK, play cisza).
+    # Na Linuxie użyj host network. Na Docker Desktop (macOS) voice w kontenerze często nie działa — patrz README.
+    network_mode: host
+    env_file:
+      - src/discord_token.env
+    environment:
+      - RUST_LOG=info,songbird=debug
