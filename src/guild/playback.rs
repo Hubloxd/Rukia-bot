@@ -5,7 +5,9 @@ use songbird::{
     tracks::TrackHandle,
     Call, Event, EventContext, EventHandler, TrackEvent,
 };
-use std::{collections::VecDeque, sync::Arc};
+use std::{collections::VecDeque, sync::Arc, time::Duration};
+
+use super::seek::format_timestamp;
 use super::state::{GuildState, PlaylistEntry};
 
 struct PlaylistSync {
@@ -45,13 +47,14 @@ pub async fn enqueue(
     state: &GuildState,
     input: Input,
     title: String,
+    duration: Option<Duration>,
 ) -> Result<(TrackHandle, usize), String> {
     let mut guard = call.lock().await;
     let queue = guard.queue().clone();
     let position = queue.len();
 
     let handle = queue.add_source(input, &mut *guard).await;
-    state.push_entry(title, handle.uuid());
+    state.push_entry(title, handle.uuid(), duration);
     attach_playlist_sync(&handle, state.playlist_arc());
 
     Ok((handle, position))
@@ -102,4 +105,46 @@ pub async fn skip_current(
 
 pub fn clear_playlist(state: &GuildState) {
     state.clear();
+}
+
+fn seek_error_message(err: impl std::fmt::Display) -> String {
+    let msg = err.to_string();
+    if msg.contains("end of stream") {
+        return "Nie można przewinąć poza długość utworu.".to_string();
+    }
+    format!("Nie udało się przewinąć: {msg}")
+}
+
+pub async fn seek_current(
+    call: &Arc<tokio::sync::Mutex<Call>>,
+    state: &GuildState,
+    target: Duration,
+) -> Result<String, String> {
+    if let Some(duration) = state.front_duration() {
+        if target > duration {
+            return Err(format!(
+                "Nie można przewinąć poza długość utworu (maks. **{}**).",
+                format_timestamp(duration)
+            ));
+        }
+    }
+
+    let handle = {
+        let guard = call.lock().await;
+        let queue = guard.queue();
+        if queue.is_empty() {
+            return Err("Kolejka jest pusta — użyj `!play`.".to_string());
+        }
+        queue
+            .current()
+            .ok_or_else(|| "Brak aktywnego utworu.".to_string())?
+    };
+
+    match handle.seek_async(target).await {
+        Ok(position) => Ok(format!(
+            "Przewinięto do **{}**.",
+            format_timestamp(position)
+        )),
+        Err(e) => Err(seek_error_message(e)),
+    }
 }

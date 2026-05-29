@@ -30,6 +30,11 @@ impl EventHandler for Handler {
             return;
         }
 
+        if let Some(arg) = msg.content.strip_prefix("!seek ") {
+            handle_seek(&ctx, &msg, arg).await;
+            return;
+        }
+
         match msg.content.as_str() {
             "!play" => {
                 let _ = msg
@@ -39,6 +44,14 @@ impl EventHandler for Handler {
             "!join" => handle_join(&ctx, &msg).await,
             "!queue" => handle_queue(&ctx, &msg).await,
             "!skip" => handle_skip(&ctx, &msg).await,
+            "!seek" => {
+                let _ = msg
+                    .reply(
+                        &ctx.http,
+                        "Użycie: `!seek <czas>` — np. `45`, `1:30`, `1:05:20`",
+                    )
+                    .await;
+            }
             "!leave" => handle_leave(&ctx, &msg).await,
             _ => {}
         }
@@ -107,19 +120,24 @@ async fn handle_play(ctx: &Context, msg: &Message, arg: &str) {
         }
     };
 
-    let title = match query.resolve_metadata(&http_client).await {
-        Ok(info) => info
-            .title
-            .unwrap_or_else(|| query.text().to_string()),
+    let track_info = match query.resolve_metadata(&http_client).await {
+        Ok(info) => info,
         Err(e) => {
             let _ = msg.reply(&ctx.http, e.to_string()).await;
             return;
         }
     };
 
+    let title = track_info
+        .title
+        .clone()
+        .unwrap_or_else(|| query.text().to_string());
+    let duration = track_info.duration.map(std::time::Duration::from_secs);
+
     let input = query.into_input(http_client);
 
-    let (track_handle, position) = match guild::enqueue(&call, &guild_state, input, title.clone()).await
+    let (track_handle, position) =
+        match guild::enqueue(&call, &guild_state, input, title.clone(), duration).await
     {
         Ok(v) => v,
         Err(e) => {
@@ -162,6 +180,52 @@ async fn handle_queue(ctx: &Context, msg: &Message) {
     let _ = msg
         .reply(&ctx.http, guild::format_queue_list(&state))
         .await;
+}
+
+async fn handle_seek(ctx: &Context, msg: &Message, arg: &str) {
+    let guild_id = match require_guild(msg) {
+        Ok(id) => id,
+        Err(reply) => {
+            let _ = msg.reply(&ctx.http, reply).await;
+            return;
+        }
+    };
+
+    let target = match guild::parse_seek_position(arg) {
+        Ok(d) => d,
+        Err(e) => {
+            let _ = msg.reply(&ctx.http, e).await;
+            return;
+        }
+    };
+
+    let states = guild_states(ctx).await;
+    let Some(state) = states.get(guild_id) else {
+        let _ = msg.reply(&ctx.http, "Nic nie gra — użyj `!play`.").await;
+        return;
+    };
+
+    let manager = match songbird::get(ctx).await {
+        Some(m) => m,
+        None => {
+            let _ = msg.reply(&ctx.http, "Bot nie jest na kanale głosowym.").await;
+            return;
+        }
+    };
+
+    let Some(call) = manager.get(guild_id) else {
+        let _ = msg.reply(&ctx.http, "Bot nie jest na kanale głosowym.").await;
+        return;
+    };
+
+    match guild::seek_current(&call, &state, target).await {
+        Ok(text) => {
+            let _ = msg.reply(&ctx.http, text).await;
+        }
+        Err(e) => {
+            let _ = msg.reply(&ctx.http, e).await;
+        }
+    }
 }
 
 async fn handle_skip(ctx: &Context, msg: &Message) {

@@ -72,10 +72,14 @@ impl EventHandler for TrackErrorLogger {
         };
 
         tracing::error!(?err, "Błąd odtwarzania utworu");
-        let _ = self
-            .channel_id
-            .say(&self.http, format!("Błąd odtwarzania: {err}"))
-            .await;
+
+        let text = if crate::guild::is_seek_past_end(&err) {
+            "Nie można przewinąć poza długość utworu.".to_string()
+        } else {
+            format!("Błąd odtwarzania: {err}")
+        };
+
+        let _ = self.channel_id.say(&self.http, text).await;
 
         Some(Event::Cancel)
     }
