@@ -4,12 +4,14 @@ use serenity::model::id::{ChannelId, GuildId};
 use serenity::prelude::TypeMapKey;
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::time::Duration;
 use uuid::Uuid;
 
 #[derive(Clone, Debug)]
 pub struct PlaylistEntry {
     pub title: String,
     pub track_id: Uuid,
+    pub duration: Option<Duration>,
 }
 
 #[derive(Clone)]
@@ -26,10 +28,16 @@ impl GuildState {
         }
     }
 
-    pub fn push_entry(&self, title: String, track_id: Uuid) {
-        self.playlist
-            .lock()
-            .push_back(PlaylistEntry { title, track_id });
+    pub fn push_entry(&self, title: String, track_id: Uuid, duration: Option<Duration>) {
+        self.playlist.lock().push_back(PlaylistEntry {
+            title,
+            track_id,
+            duration,
+        });
+    }
+
+    pub fn front_duration(&self) -> Option<Duration> {
+        self.playlist.lock().front().and_then(|e| e.duration)
     }
 
     pub fn pop_front(&self) -> Option<PlaylistEntry> {

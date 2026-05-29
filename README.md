@@ -164,13 +164,14 @@ Wymaga `yt-dlp` i `ffmpeg` w `PATH` na hoście.
 
 # Komendy
 
-| Komenda       | Opis                            |
-| ------------- | ------------------------------- |
-| `!join`       | Bot dołącza do kanału głosowego |
-| `!play <url>` | Odtwarzanie utworu z YouTube    |
-| `!skip`       | Pominięcie aktualnego utworu    |
-| `!queue`      | Wyświetlenie kolejki            |
-| `!leave`      | Opuszczenie kanału głosowego    |
+| Komenda        | Opis                                                       |
+| -------------- | ---------------------------------------------------------- |
+| `!join`        | Bot dołącza do kanału głosowego                            |
+| `!play <url>`  | Odtwarzanie utworu z YouTube (kolejka per serwer)          |
+| `!seek <czas>` | Przewinięcie bieżącego utworu (`45`, `1:30`, `1:05:20`)    |
+| `!skip`        | Pominięcie aktualnego utworu                               |
+| `!queue`       | Wyświetlenie kolejki                                       |
+| `!leave`       | Opuszczenie kanału głosowego                               |
 
 ---
 
@@ -202,7 +203,7 @@ Projekt inspirowany jest rozwiązaniami:
 
 # Status projektu
 
-Działają: `!join`, `!play`, `!queue`, `!skip`, `!leave` — osobna kolejka i stan na każdą gildię (`src/guild/`, songbird `builtin-queue`).
+Działają: `!join`, `!play`, `!seek`, `!queue`, `!skip`, `!leave` — osobna kolejka i stan na każdą gildię (`src/guild/`, songbird `builtin-queue`).
 
 W przygotowaniu: worker pool, zaawansowane zarządzanie kolejką.
 
