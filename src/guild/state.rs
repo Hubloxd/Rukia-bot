@@ -3,6 +3,7 @@ use parking_lot::Mutex;
 use serenity::model::id::{ChannelId, GuildId};
 use serenity::prelude::TypeMapKey;
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
@@ -18,6 +19,8 @@ pub struct PlaylistEntry {
 pub struct GuildState {
     pub notify_channel: ChannelId,
     playlist: Arc<Mutex<VecDeque<PlaylistEntry>>>,
+    paused: Arc<AtomicBool>,
+    looping: Arc<AtomicBool>,
 }
 
 impl GuildState {
@@ -25,6 +28,8 @@ impl GuildState {
         Self {
             notify_channel,
             playlist: Arc::new(Mutex::new(VecDeque::new())),
+            paused: Arc::new(AtomicBool::new(false)),
+            looping: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -54,10 +59,33 @@ impl GuildState {
 
     pub fn clear(&self) {
         self.playlist.lock().clear();
+        self.set_paused(false);
+        self.set_looping(false);
     }
 
     pub fn playlist_arc(&self) -> Arc<Mutex<VecDeque<PlaylistEntry>>> {
         Arc::clone(&self.playlist)
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::SeqCst)
+    }
+
+    pub fn set_paused(&self, value: bool) {
+        self.paused.store(value, Ordering::SeqCst);
+    }
+
+    pub fn is_looping(&self) -> bool {
+        self.looping.load(Ordering::SeqCst)
+    }
+
+    pub fn set_looping(&self, value: bool) {
+        self.looping.store(value, Ordering::SeqCst);
+    }
+
+    pub fn reset_playback_flags(&self) {
+        self.set_paused(false);
+        self.set_looping(false);
     }
 }
 

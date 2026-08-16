@@ -44,6 +44,8 @@ impl EventHandler for Handler {
             "!join" => handle_join(&ctx, &msg).await,
             "!queue" => handle_queue(&ctx, &msg).await,
             "!skip" => handle_skip(&ctx, &msg).await,
+            "!pause" => handle_pause(&ctx, &msg).await,
+            "!loop" => handle_loop(&ctx, &msg).await,
             "!seek" => {
                 let _ = msg
                     .reply(
@@ -257,6 +259,82 @@ async fn handle_skip(ctx: &Context, msg: &Message) {
     };
 
     match guild::skip_current(&call, &state).await {
+        Ok(text) => {
+            let _ = msg.reply(&ctx.http, text).await;
+        }
+        Err(e) => {
+            let _ = msg.reply(&ctx.http, e).await;
+        }
+    }
+}
+
+async fn handle_pause(ctx: &Context, msg: &Message) {
+    let guild_id = match require_guild(msg) {
+        Ok(id) => id,
+        Err(reply) => {
+            let _ = msg.reply(&ctx.http, reply).await;
+            return;
+        }
+    };
+
+    let states = guild_states(ctx).await;
+    let Some(state) = states.get(guild_id) else {
+        let _ = msg.reply(&ctx.http, "Nic nie gra — użyj `!play`.").await;
+        return;
+    };
+
+    let manager = match songbird::get(ctx).await {
+        Some(m) => m,
+        None => {
+            let _ = msg.reply(&ctx.http, "Bot nie jest na kanale głosowym.").await;
+            return;
+        }
+    };
+
+    let Some(call) = manager.get(guild_id) else {
+        let _ = msg.reply(&ctx.http, "Bot nie jest na kanale głosowym.").await;
+        return;
+    };
+
+    match guild::toggle_pause(&call, &state).await {
+        Ok(text) => {
+            let _ = msg.reply(&ctx.http, text).await;
+        }
+        Err(e) => {
+            let _ = msg.reply(&ctx.http, e).await;
+        }
+    }
+}
+
+async fn handle_loop(ctx: &Context, msg: &Message) {
+    let guild_id = match require_guild(msg) {
+        Ok(id) => id,
+        Err(reply) => {
+            let _ = msg.reply(&ctx.http, reply).await;
+            return;
+        }
+    };
+
+    let states = guild_states(ctx).await;
+    let Some(state) = states.get(guild_id) else {
+        let _ = msg.reply(&ctx.http, "Nic nie gra — użyj `!play`.").await;
+        return;
+    };
+
+    let manager = match songbird::get(ctx).await {
+        Some(m) => m,
+        None => {
+            let _ = msg.reply(&ctx.http, "Bot nie jest na kanale głosowym.").await;
+            return;
+        }
+    };
+
+    let Some(call) = manager.get(guild_id) else {
+        let _ = msg.reply(&ctx.http, "Bot nie jest na kanale głosowym.").await;
+        return;
+    };
+
+    match guild::toggle_loop(&call, &state).await {
         Ok(text) => {
             let _ = msg.reply(&ctx.http, text).await;
         }
