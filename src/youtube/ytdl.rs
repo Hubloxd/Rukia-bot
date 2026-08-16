@@ -140,11 +140,23 @@ impl Compose for YtdlSource {
     async fn create_async(
         &mut self,
     ) -> Result<AudioStream<Box<dyn symphonia::core::io::MediaSource>>, AudioStreamError> {
-        let output = self
-            .fetch_output()
-            .await
-            .map_err(|e| AudioStreamError::Fail(e.to_string().into()))?;
-        self.open_stream(&output).await
+        let mut last_err = None;
+        for attempt in 0..2u8 {
+            let output = self
+                .fetch_output()
+                .await
+                .map_err(|e| AudioStreamError::Fail(e.to_string().into()))?;
+            match self.open_stream(&output).await {
+                Ok(stream) => return Ok(stream),
+                Err(e) if is_http_forbidden(&e) && attempt == 0 => {
+                    tracing::warn!("YouTube 403 przy otwieraniu streamu, ponawiam yt-dlp");
+                    last_err = Some(e);
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err(last_err.expect("retry loop"))
     }
 
     fn should_create_async(&self) -> bool {
@@ -164,4 +176,8 @@ impl From<YtdlSource> for Input {
     fn from(val: YtdlSource) -> Input {
         Input::Lazy(Box::new(val))
     }
+}
+
+fn is_http_forbidden(err: &AudioStreamError) -> bool {
+    err.to_string().contains("403")
 }
