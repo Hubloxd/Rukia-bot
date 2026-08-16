@@ -73,14 +73,4 @@ impl YoutubeQuery {
     pub fn into_input(self, client: Client) -> Input {
         self.build_source(client).into()
     }
-
-    /// Cache the stream in memory so `!seek` / `!loop` don't re-hit YouTube
-    /// (googlevideo URLs expire and return 403 on recreate).
-    pub async fn into_seekable_input(self, client: Client) -> Result<Input, YoutubeError> {
-        let input = self.into_input(client);
-        let cached = songbird::input::cached::Memory::new(input)
-            .await
-            .map_err(|e| YoutubeError::ResolveFailed(e.to_string()))?;
-        Ok(cached.into())
-    }
 }

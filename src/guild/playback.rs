@@ -1,16 +1,20 @@
 use async_trait::async_trait;
 use songbird::{
     input::Input,
-    tracks::TrackHandle,
+    tracks::{PlayMode, Track, TrackHandle},
     Call, Event, EventContext, EventHandler, TrackEvent,
 };
 use std::{sync::Arc, time::Duration};
+use tokio::sync::Mutex;
+use uuid::Uuid;
 
 use super::seek::format_timestamp;
-use super::state::GuildState;
+use super::state::{GuildState, PlaylistEntry};
+use crate::youtube::YoutubeQuery;
 
 struct PlaylistSync {
     state: GuildState,
+    call: Arc<Mutex<Call>>,
 }
 
 #[async_trait]
@@ -20,47 +24,106 @@ impl EventHandler for PlaylistSync {
             return None;
         };
 
-        let (_, handle) = states.first()?;
-        let playlist = self.state.playlist_arc();
-        let mut list = playlist.lock();
+        let (track_state, handle) = states.first()?;
+        let ended_uuid = handle.uuid();
 
-        if list
-            .front()
-            .is_some_and(|e| e.track_id == handle.uuid())
-        {
-            list.pop_front();
+        let Some(front) = self.state.front_entry() else {
+            return None;
+        };
+        if front.track_id != ended_uuid {
+            return None;
         }
-        drop(list);
 
+        let natural_end = matches!(track_state.playing, PlayMode::End);
+        if natural_end && self.state.is_looping() {
+            let state = self.state.clone();
+            let call = Arc::clone(&self.call);
+            tokio::spawn(async move {
+                restart_looped_track(call, state, front, ended_uuid).await;
+            });
+            return None;
+        }
+
+        self.state.pop_front();
         self.state.reset_playback_flags();
-
         None
     }
 }
 
-fn attach_playlist_sync(handle: &TrackHandle, state: &GuildState) {
+async fn restart_looped_track(
+    call: Arc<Mutex<Call>>,
+    state: GuildState,
+    entry: PlaylistEntry,
+    ended_uuid: Uuid,
+) {
+    let input = entry.query.clone().into_input(state.http_client.clone());
+
+    let mut guard = call.lock().await;
+    let queue = guard.queue().clone();
+
+    let displaced = queue.modify_queue(|q| q.drain(..).collect::<Vec<_>>());
+    for track in &displaced {
+        if track.uuid() == ended_uuid {
+            let _ = track.stop();
+        } else {
+            let _ = track.pause();
+        }
+    }
+
+    let preload = entry
+        .duration
+        .map(|d| d.saturating_sub(Duration::from_secs(5)));
+    let handle = queue.add_with_preload(Track::from(input), &mut *guard, preload);
+
+    queue.modify_queue(|q| {
+        for track in displaced {
+            if track.uuid() != ended_uuid {
+                q.push_back(track);
+            }
+        }
+    });
+    drop(guard);
+
+    state.set_front_track_id(handle.uuid());
+    state.set_paused(false);
+    attach_playlist_sync(&handle, &state, &call);
+    crate::voice::attach_track_error_logger(
+        &handle,
+        state.notify_channel,
+        Arc::clone(&state.discord_http),
+    );
+
+    tracing::info!(title = %entry.title, "Ponowne odtworzenie utworu (pętla)");
+}
+
+fn attach_playlist_sync(handle: &TrackHandle, state: &GuildState, call: &Arc<Mutex<Call>>) {
     let _ = handle.add_event(
         Event::Track(TrackEvent::End),
         PlaylistSync {
             state: state.clone(),
+            call: Arc::clone(call),
         },
     );
 }
 
 pub async fn enqueue(
-    call: &Arc<tokio::sync::Mutex<Call>>,
+    call: &Arc<Mutex<Call>>,
     state: &GuildState,
     input: Input,
     title: String,
     duration: Option<Duration>,
+    query: YoutubeQuery,
 ) -> Result<(TrackHandle, usize), String> {
     let mut guard = call.lock().await;
     let queue = guard.queue().clone();
     let position = queue.len();
 
-    let handle = queue.add_source(input, &mut *guard).await;
-    state.push_entry(title, handle.uuid(), duration);
-    attach_playlist_sync(&handle, state);
+    let preload = duration.map(|d| d.saturating_sub(Duration::from_secs(5)));
+    let handle = queue.add_with_preload(Track::from(input), &mut *guard, preload);
+    drop(guard);
+
+    state.push_entry(title, handle.uuid(), duration, query);
+    attach_playlist_sync(&handle, state, call);
 
     Ok((handle, position))
 }
@@ -93,7 +156,7 @@ pub fn format_queue_list(state: &GuildState) -> String {
 }
 
 pub async fn skip_current(
-    call: &Arc<tokio::sync::Mutex<Call>>,
+    call: &Arc<Mutex<Call>>,
     state: &GuildState,
 ) -> Result<String, String> {
     let guard = call.lock().await;
@@ -132,7 +195,7 @@ fn seek_error_message(err: impl std::fmt::Display) -> String {
 }
 
 pub async fn seek_current(
-    call: &Arc<tokio::sync::Mutex<Call>>,
+    call: &Arc<Mutex<Call>>,
     state: &GuildState,
     target: Duration,
 ) -> Result<String, String> {
@@ -165,9 +228,7 @@ pub async fn seek_current(
     }
 }
 
-async fn current_handle(
-    call: &Arc<tokio::sync::Mutex<Call>>,
-) -> Result<TrackHandle, String> {
+async fn current_handle(call: &Arc<Mutex<Call>>) -> Result<TrackHandle, String> {
     let guard = call.lock().await;
     let queue = guard.queue();
     if queue.is_empty() {
@@ -179,7 +240,7 @@ async fn current_handle(
 }
 
 pub async fn toggle_pause(
-    call: &Arc<tokio::sync::Mutex<Call>>,
+    call: &Arc<Mutex<Call>>,
     state: &GuildState,
 ) -> Result<String, String> {
     let handle = current_handle(call).await?;
@@ -200,21 +261,15 @@ pub async fn toggle_pause(
 }
 
 pub async fn toggle_loop(
-    call: &Arc<tokio::sync::Mutex<Call>>,
+    call: &Arc<Mutex<Call>>,
     state: &GuildState,
 ) -> Result<String, String> {
-    let handle = current_handle(call).await?;
+    let _handle = current_handle(call).await?;
 
     if state.is_looping() {
-        handle
-            .disable_loop()
-            .map_err(|e| format!("Nie udało się wyłączyć pętli: {e}"))?;
         state.set_looping(false);
         Ok("Pętla wyłączona.".to_string())
     } else {
-        handle
-            .enable_loop()
-            .map_err(|e| format!("Nie udało się włączyć pętli: {e}"))?;
         state.set_looping(true);
         Ok("Pętla włączona — aktualny utwór będzie odtwarzany w kółko.".to_string())
     }
