@@ -69,7 +69,15 @@ async fn handle_join(ctx: &Context, msg: &Message) {
         }
     };
 
-    let _ = guild_states(ctx).await.get_or_create(guild_id, msg.channel_id);
+    let http_client = {
+        let data = ctx.data.read().await;
+        data.get::<HttpKey>()
+            .cloned()
+            .expect("HTTP client missing from TypeMap")
+    };
+    let _ = guild_states(ctx)
+        .await
+        .get_or_create(guild_id, msg.channel_id, http_client, ctx.http.clone());
 
     match voice::join_user_channel(ctx, msg, guild_id).await {
         Ok(_) => {
@@ -112,7 +120,12 @@ async fn handle_play(ctx: &Context, msg: &Message, arg: &str) {
     };
 
     let states = guild_states(ctx).await;
-    let guild_state = states.get_or_create(guild_id, msg.channel_id);
+    let guild_state = states.get_or_create(
+        guild_id,
+        msg.channel_id,
+        http_client.clone(),
+        ctx.http.clone(),
+    );
 
     let call = match voice::ensure_call(ctx, msg, guild_id).await {
         Ok(c) => c,
@@ -136,16 +149,17 @@ async fn handle_play(ctx: &Context, msg: &Message, arg: &str) {
         .unwrap_or_else(|| query.text().to_string());
     let duration = track_info.duration.map(std::time::Duration::from_secs);
 
-    let input = match query.into_seekable_input(http_client).await {
-        Ok(input) => input,
-        Err(e) => {
-            let _ = msg.reply(&ctx.http, e.to_string()).await;
-            return;
-        }
-    };
+    let input = query.clone().into_input(http_client);
 
-    let (track_handle, position) =
-        match guild::enqueue(&call, &guild_state, input, title.clone(), duration).await
+    let (track_handle, position) = match guild::enqueue(
+        &call,
+        &guild_state,
+        input,
+        title.clone(),
+        duration,
+        query,
+    )
+    .await
     {
         Ok(v) => v,
         Err(e) => {
