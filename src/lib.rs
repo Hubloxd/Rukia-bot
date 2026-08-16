@@ -136,7 +136,13 @@ async fn handle_play(ctx: &Context, msg: &Message, arg: &str) {
         .unwrap_or_else(|| query.text().to_string());
     let duration = track_info.duration.map(std::time::Duration::from_secs);
 
-    let input = query.into_input(http_client);
+    let input = match query.into_seekable_input(http_client).await {
+        Ok(input) => input,
+        Err(e) => {
+            let _ = msg.reply(&ctx.http, e.to_string()).await;
+            return;
+        }
+    };
 
     let (track_handle, position) =
         match guild::enqueue(&call, &guild_state, input, title.clone(), duration).await
