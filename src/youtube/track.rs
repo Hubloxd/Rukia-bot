@@ -4,7 +4,7 @@ use songbird::input::Input;
 use super::error::YoutubeError;
 use super::ytdl::YtdlSource;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct YoutubeQuery {
     text: String,
     is_url: bool,
@@ -72,5 +72,9 @@ impl YoutubeQuery {
 
     pub fn into_input(self, client: Client) -> Input {
         self.build_source(client).into()
+    }
+
+    pub async fn into_buffered_audio(self, client: Client) -> Result<std::sync::Arc<[u8]>, YoutubeError> {
+        self.build_source(client).download().await
     }
 }

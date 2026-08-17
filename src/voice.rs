@@ -57,6 +57,7 @@ pub async fn ensure_call(
 struct TrackErrorLogger {
     channel_id: ChannelId,
     http: Arc<serenity::http::Http>,
+    suppress_when_looping: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 #[async_trait]
@@ -72,6 +73,14 @@ impl EventHandler for TrackErrorLogger {
         };
 
         tracing::error!(?err, "Błąd odtwarzania utworu");
+
+        let looping = self
+            .suppress_when_looping
+            .as_ref()
+            .is_some_and(|f| f.load(std::sync::atomic::Ordering::SeqCst));
+        if looping {
+            return None;
+        }
 
         let text = if crate::guild::is_seek_past_end(&err) {
             "Nie można przewinąć poza długość utworu.".to_string()
@@ -89,8 +98,13 @@ pub fn attach_track_error_logger(
     handle: &songbird::tracks::TrackHandle,
     channel_id: ChannelId,
     http: Arc<serenity::http::Http>,
+    suppress_when_looping: Option<Arc<std::sync::atomic::AtomicBool>>,
 ) {
-    let logger = TrackErrorLogger { channel_id, http };
+    let logger = TrackErrorLogger {
+        channel_id,
+        http,
+        suppress_when_looping,
+    };
 
     if let Err(e) = handle.add_event(Event::Track(TrackEvent::Error), logger) {
         tracing::warn!(?e, "Nie udało się podpiąć logera błędów tracku");

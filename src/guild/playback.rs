@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use songbird::{
+    events::EventData,
     input::Input,
     tracks::{PlayMode, Track, TrackHandle},
     Call, Event, EventContext, EventHandler, TrackEvent,
@@ -9,7 +10,7 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use super::seek::format_timestamp;
-use super::state::{GuildState, PlaylistEntry};
+use super::state::GuildState;
 use crate::youtube::YoutubeQuery;
 
 struct PlaylistSync {
@@ -34,98 +35,157 @@ impl EventHandler for PlaylistSync {
             return None;
         }
 
-        let natural_end = matches!(track_state.playing, PlayMode::End);
-        if natural_end && self.state.is_looping() {
-            let state = self.state.clone();
-            let call = Arc::clone(&self.call);
-            tokio::spawn(async move {
-                restart_looped_track(call, state, front, ended_uuid).await;
-            });
+        if matches!(track_state.playing, PlayMode::Stop) {
+            return None;
+        }
+
+        if self.state.is_looping() {
             return None;
         }
 
         self.state.pop_front();
         self.state.reset_playback_flags();
+
+        let state = self.state.clone();
+        let call = Arc::clone(&self.call);
+        tokio::spawn(async move {
+            if let Err(e) = play_front(&call, &state).await {
+                tracing::warn!(%e, "Nie udało się puścić następnego utworu");
+                let _ = state
+                    .notify_channel
+                    .say(&state.discord_http, e)
+                    .await;
+            }
+        });
         None
     }
 }
 
-async fn restart_looped_track(
-    call: Arc<Mutex<Call>>,
-    state: GuildState,
-    entry: PlaylistEntry,
-    ended_uuid: Uuid,
-) {
-    let input = entry.query.clone().into_input(state.http_client.clone());
+fn input_from_audio(audio: &Arc<[u8]>) -> Input {
+    Input::from(Arc::clone(audio))
+}
+
+async fn songbird_has_live_track(call: &Arc<Mutex<Call>>) -> bool {
+    let handle = {
+        let guard = call.lock().await;
+        guard.queue().current()
+    };
+    let Some(handle) = handle else {
+        return false;
+    };
+    match handle.get_info().await {
+        Ok(info) => matches!(info.playing, PlayMode::Play | PlayMode::Pause),
+        Err(_) => false,
+    }
+}
+
+async fn start_buffered(
+    call: &Arc<Mutex<Call>>,
+    state: &GuildState,
+    audio: Arc<[u8]>,
+) -> Result<TrackHandle, String> {
+    let track_id = Uuid::new_v4();
+    state.set_front_track_id(track_id);
+    state.set_front_audio(Arc::clone(&audio));
+
+    let mut track = Track::new_with_uuid(input_from_audio(&audio), track_id);
+    track.events.add_event(
+        EventData::new(
+            Event::Track(TrackEvent::End),
+            PlaylistSync {
+                state: state.clone(),
+                call: Arc::clone(call),
+            },
+        ),
+        Duration::ZERO,
+    );
 
     let mut guard = call.lock().await;
     let queue = guard.queue().clone();
-
-    let displaced = queue.modify_queue(|q| q.drain(..).collect::<Vec<_>>());
-    for track in &displaced {
-        if track.uuid() == ended_uuid {
-            let _ = track.stop();
-        } else {
-            let _ = track.pause();
-        }
-    }
-
-    let preload = entry
-        .duration
-        .map(|d| d.saturating_sub(Duration::from_secs(5)));
-    let handle = queue.add_with_preload(Track::from(input), &mut *guard, preload);
-
-    queue.modify_queue(|q| {
-        for track in displaced {
-            if track.uuid() != ended_uuid {
-                q.push_back(track);
-            }
-        }
-    });
+    queue.stop();
+    let handle = queue.add_with_preload(track, &mut *guard, None);
     drop(guard);
 
-    state.set_front_track_id(handle.uuid());
-    state.set_paused(false);
-    attach_playlist_sync(&handle, &state, &call);
     crate::voice::attach_track_error_logger(
         &handle,
         state.notify_channel,
         Arc::clone(&state.discord_http),
+        Some(state.looping_flag()),
     );
-
-    tracing::info!(title = %entry.title, "Ponowne odtworzenie utworu (pętla)");
+    tracing::info!(
+        title = state.front_entry().map(|e| e.title).unwrap_or_default(),
+        bytes = audio.len(),
+        "Start odtwarzania"
+    );
+    Ok(handle)
 }
 
-fn attach_playlist_sync(handle: &TrackHandle, state: &GuildState, call: &Arc<Mutex<Call>>) {
-    let _ = handle.add_event(
-        Event::Track(TrackEvent::End),
-        PlaylistSync {
-            state: state.clone(),
-            call: Arc::clone(call),
-        },
-    );
+async fn play_front(
+    call: &Arc<Mutex<Call>>,
+    state: &GuildState,
+) -> Result<(), String> {
+    let _gate = state.play_gate().lock().await;
+    if songbird_has_live_track(call).await {
+        return Ok(());
+    }
+
+    loop {
+        let Some(entry) = state.front_entry() else {
+            return Ok(());
+        };
+
+        let expected_query = entry.query.clone();
+        let audio = match expected_query
+            .clone()
+            .into_buffered_audio(state.http_client.clone())
+            .await
+        {
+            Ok(audio) => audio,
+            Err(e) => {
+                tracing::warn!(title = %entry.title, error = %e, "Pomijam utwór — pobieranie nieudane");
+                let _ = state
+                    .notify_channel
+                    .say(
+                        &state.discord_http,
+                        format!("Nie udało się pobrać **{}**: {e}", entry.title),
+                    )
+                    .await;
+                if state.front_entry().is_some_and(|front| front.query == expected_query) {
+                    state.pop_front();
+                }
+                continue;
+            }
+        };
+
+        let Some(front) = state.front_entry() else {
+            return Ok(());
+        };
+        if front.query != expected_query {
+            return Ok(());
+        }
+
+        start_buffered(call, state, audio).await?;
+        return Ok(());
+    }
 }
 
+/// Dodaje utwór: od razu gra, albo tylko do kolejki (bez pobierania audio).
 pub async fn enqueue(
     call: &Arc<Mutex<Call>>,
     state: &GuildState,
-    input: Input,
     title: String,
     duration: Option<Duration>,
     query: YoutubeQuery,
-) -> Result<(TrackHandle, usize), String> {
-    let mut guard = call.lock().await;
-    let queue = guard.queue().clone();
-    let position = queue.len();
+) -> Result<usize, String> {
+    let already_playing = songbird_has_live_track(call).await;
+    state.push_entry(title, Uuid::nil(), duration, query, None);
+    let position = state.len().saturating_sub(1);
 
-    let preload = duration.map(|d| d.saturating_sub(Duration::from_secs(5)));
-    let handle = queue.add_with_preload(Track::from(input), &mut *guard, preload);
-    drop(guard);
+    if !already_playing {
+        play_front(call, state).await?;
+    }
 
-    state.push_entry(title, handle.uuid(), duration, query);
-    attach_playlist_sync(&handle, state, call);
-
-    Ok((handle, position))
+    Ok(position)
 }
 
 pub fn format_queue_list(state: &GuildState) -> String {
@@ -159,25 +219,32 @@ pub async fn skip_current(
     call: &Arc<Mutex<Call>>,
     state: &GuildState,
 ) -> Result<String, String> {
-    let guard = call.lock().await;
-    let queue = guard.queue();
-
-    if queue.is_empty() {
+    if state.len() == 0 {
         return Err("Kolejka jest pusta.".to_string());
     }
 
-    let skipped = queue
-        .dequeue(0)
-        .ok_or_else(|| "Brak utworu do pominięcia.".to_string())?;
-
     let title = state
-        .pop_front()
+        .front_entry()
         .map(|e| e.title)
         .unwrap_or_else(|| "nieznany utwór".to_string());
 
-    let _ = skipped.stop();
-    let _ = queue.resume();
+    // Zdejmij bieżący utwór z playlisty zanim Songbird wyśle End/Stop —
+    // inaczej PlaylistSync mógłby zdjąć też następny.
+    state.pop_front();
     state.reset_playback_flags();
+
+    {
+        let guard = call.lock().await;
+        let queue = guard.queue();
+        if let Some(current) = queue.current() {
+            let _ = current.stop();
+        }
+        queue.stop();
+    }
+
+    if let Err(e) = play_front(call, state).await {
+        return Err(format!("Pominięto: **{title}** — {e}"));
+    }
 
     Ok(format!("Pominięto: **{title}**"))
 }
@@ -208,16 +275,7 @@ pub async fn seek_current(
         }
     }
 
-    let handle = {
-        let guard = call.lock().await;
-        let queue = guard.queue();
-        if queue.is_empty() {
-            return Err("Kolejka jest pusta — użyj `!play`.".to_string());
-        }
-        queue
-            .current()
-            .ok_or_else(|| "Brak aktywnego utworu.".to_string())?
-    };
+    let handle = current_handle(call).await?;
 
     match handle.seek_async(target).await {
         Ok(position) => Ok(format!(
@@ -264,12 +322,18 @@ pub async fn toggle_loop(
     call: &Arc<Mutex<Call>>,
     state: &GuildState,
 ) -> Result<String, String> {
-    let _handle = current_handle(call).await?;
+    let handle = current_handle(call).await?;
 
     if state.is_looping() {
+        handle
+            .disable_loop()
+            .map_err(|e| format!("Nie udało się wyłączyć pętli: {e}"))?;
         state.set_looping(false);
         Ok("Pętla wyłączona.".to_string())
     } else {
+        handle
+            .enable_loop()
+            .map_err(|e| format!("Nie udało się włączyć pętli: {e}"))?;
         state.set_looping(true);
         Ok("Pętla włączona — aktualny utwór będzie odtwarzany w kółko.".to_string())
     }

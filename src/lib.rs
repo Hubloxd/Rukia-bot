@@ -149,12 +149,11 @@ async fn handle_play(ctx: &Context, msg: &Message, arg: &str) {
         .unwrap_or_else(|| query.text().to_string());
     let duration = track_info.duration.map(std::time::Duration::from_secs);
 
-    let input = query.clone().into_input(http_client);
+    tracing::info!(title = %title, "Przygotowuję utwór");
 
-    let (track_handle, position) = match guild::enqueue(
+    let position = match guild::enqueue(
         &call,
         &guild_state,
-        input,
         title.clone(),
         duration,
         query,
@@ -167,12 +166,6 @@ async fn handle_play(ctx: &Context, msg: &Message, arg: &str) {
             return;
         }
     };
-
-    voice::attach_track_error_logger(
-        &track_handle,
-        guild_state.notify_channel,
-        ctx.http.clone(),
-    );
 
     let reply = if position == 0 {
         format!("Odtwarzam: **{title}**")
