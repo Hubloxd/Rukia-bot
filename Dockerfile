@@ -25,7 +25,9 @@ RUN apt-get update \
         ffmpeg \
         python3 \
         python3-pip \
-    && pip3 install --no-cache-dir --break-system-packages yt-dlp \
+        unzip \
+    && curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh \
+    && pip3 install --no-cache-dir --break-system-packages 'yt-dlp[default]' \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/target/release/Rukia-bar /usr/local/bin/rukia-bar

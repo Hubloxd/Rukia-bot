@@ -93,10 +93,19 @@ Projekt wymaga jawnej zależności `symphonia` z formatami (WebM/MKV, MP4, AAC�
 
 ## Lokalny development (opcjonalnie)
 
-### macOS
+### macOS / Linux (WSL)
+
+Potrzebne są **ffmpeg**, **yt-dlp** z pakietem EJS oraz runtime JS (**Node 20+** albo **Deno 2+**) — YouTube wymaga solvera sygnatur.
 
 ```bash id="v9vlt0"
-brew install cmake opus pkg-config ffmpeg yt-dlp
+# macOS
+brew install cmake opus pkg-config ffmpeg yt-dlp node
+
+# WSL / Linux — venv w katalogu projektu:
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -U 'yt-dlp[default]'
+# Node 20+ w PATH (np. brew install node) albo Deno 2+
 ```
 
 ### Rust
@@ -158,7 +167,7 @@ Katalog `/app` w kontenerze jest pusty z założenia — binarka leży w `/usr/l
 cargo run
 ```
 
-Wymaga `yt-dlp` i `ffmpeg` w `PATH` na hoście.
+Wymaga `yt-dlp` (z `yt-dlp-ejs`), `ffmpeg` oraz **Node 20+** albo **Deno 2+** w `PATH`.
 
 ---
 

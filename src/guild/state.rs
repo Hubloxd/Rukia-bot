@@ -5,7 +5,7 @@ use serenity::http::Http;
 use serenity::model::id::{ChannelId, GuildId};
 use serenity::prelude::TypeMapKey;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
@@ -18,6 +18,7 @@ pub struct PlaylistEntry {
     pub track_id: Uuid,
     pub duration: Option<Duration>,
     pub query: YoutubeQuery,
+    pub audio: Option<Arc<[u8]>>,
 }
 
 #[derive(Clone)]
@@ -28,6 +29,9 @@ pub struct GuildState {
     playlist: Arc<Mutex<VecDeque<PlaylistEntry>>>,
     paused: Arc<AtomicBool>,
     looping: Arc<AtomicBool>,
+    loop_fail_streak: Arc<AtomicU8>,
+    current_audio: Arc<Mutex<Option<Arc<[u8]>>>>,
+    play_gate: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl GuildState {
@@ -39,6 +43,9 @@ impl GuildState {
             playlist: Arc::new(Mutex::new(VecDeque::new())),
             paused: Arc::new(AtomicBool::new(false)),
             looping: Arc::new(AtomicBool::new(false)),
+            loop_fail_streak: Arc::new(AtomicU8::new(0)),
+            current_audio: Arc::new(Mutex::new(None)),
+            play_gate: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -48,13 +55,22 @@ impl GuildState {
         track_id: Uuid,
         duration: Option<Duration>,
         query: YoutubeQuery,
+        audio: Option<Arc<[u8]>>,
     ) {
         self.playlist.lock().push_back(PlaylistEntry {
             title,
             track_id,
             duration,
             query,
+            audio,
         });
+    }
+
+    pub fn set_front_audio(&self, audio: Arc<[u8]>) {
+        if let Some(front) = self.playlist.lock().front_mut() {
+            front.audio = Some(Arc::clone(&audio));
+        }
+        self.set_current_audio(Some(audio));
     }
 
     pub fn front_duration(&self) -> Option<Duration> {
@@ -72,7 +88,20 @@ impl GuildState {
     }
 
     pub fn pop_front(&self) -> Option<PlaylistEntry> {
-        self.playlist.lock().pop_front()
+        let mut list = self.playlist.lock();
+        let gone = list.pop_front();
+        let next = list.front().and_then(|e| e.audio.clone());
+        drop(list);
+        self.set_current_audio(next);
+        gone
+    }
+
+    pub fn set_current_audio(&self, audio: Option<Arc<[u8]>>) {
+        *self.current_audio.lock() = audio;
+    }
+
+    pub fn current_audio(&self) -> Option<Arc<[u8]>> {
+        self.current_audio.lock().clone()
     }
 
     pub fn len(&self) -> usize {
@@ -85,6 +114,7 @@ impl GuildState {
 
     pub fn clear(&self) {
         self.playlist.lock().clear();
+        self.set_current_audio(None);
         self.set_paused(false);
         self.set_looping(false);
     }
@@ -107,11 +137,33 @@ impl GuildState {
 
     pub fn set_looping(&self, value: bool) {
         self.looping.store(value, Ordering::SeqCst);
+        if !value {
+            self.reset_loop_fail_streak();
+        }
+    }
+
+    pub fn looping_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.looping)
+    }
+
+    pub fn bump_loop_fail_streak(&self) -> u8 {
+        self.loop_fail_streak
+            .fetch_add(1, Ordering::SeqCst)
+            .saturating_add(1)
+    }
+
+    pub fn reset_loop_fail_streak(&self) {
+        self.loop_fail_streak.store(0, Ordering::SeqCst);
     }
 
     pub fn reset_playback_flags(&self) {
         self.set_paused(false);
         self.set_looping(false);
+        self.reset_loop_fail_streak();
+    }
+
+    pub fn play_gate(&self) -> &Arc<tokio::sync::Mutex<()>> {
+        &self.play_gate
     }
 }
 
